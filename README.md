@@ -66,7 +66,7 @@ go version
 ### Step 2: Download the Proxy
 
 ```bash
-git clone https://github.com/mudlark-app/mudlark-proxy.git
+git clone https://github.com/windu-ant/mudlark-server-pub.git
 cd mudlark-proxy
 ```
 
