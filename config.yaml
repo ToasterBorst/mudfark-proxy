@@ -1,0 +1,38 @@
+# MUDlark Proxy Server Configuration
+# Copy this file and adjust to your environment.
+# For TLS: provide paths to your cert/key files.
+# For development: leave tls_cert_file and tls_key_file empty to run plain HTTP/WS.
+
+server:
+  address: ":8443"                    # Listen address (e.g. ":8443" or ":443")
+  tls_cert_file: ""                   # Path to TLS certificate (leave empty for HTTP/WS)
+  tls_key_file: ""                    # Path to TLS private key (leave empty for HTTP/WS)
+  read_timeout: 60s
+  write_timeout: 60s
+  idle_timeout: 120s
+
+auth:
+  jwt_secret: ""                      # HMAC secret — set via JWT_SECRET env var or here
+  jwt_algorithm: "HS256"              # HS256 or RS256
+  jwt_public_key: ""                  # Path to public key (for RS256)
+  audience: "mudlark-client"          # Expected audience claim
+  issuer: "mudlark-proxy"             # Expected issuer claim
+  max_token_age: 24h                  # Maximum accepted token age
+  token_expiry: 15m                   # Expiry for server-issued tokens
+  allowed_origins: []                 # Allowed WebSocket origins (empty = allow all)
+  # Example:
+  #   - "https://your-domain.example.com"
+  user_store_path: "data/users.json"  # Path to user registration store
+
+buffer:
+  capacity: 2000                      # Number of lines to store in ring buffer
+  max_replay: 2000                    # Maximum lines to replay on reconnect
+  sensitive_re: '(?i)password[:>\s]'  # Regex for password detection
+  sensitive_ttl: 10s                  # How long to stay in sensitive mode
+
+mud:
+  connect_timeout: 10s                # Timeout for connecting to MUD
+  read_timeout: 5m                    # Read timeout for MUD socket
+  write_timeout: 30s                  # Write timeout for MUD socket
+  idle_timeout: 60m                   # How long to keep session alive without client
+  line_ending: "\n"                   # Line ending to send to MUD (\n or \r\n)

@@ -1,0 +1,42 @@
+# MUDlark Proxy — Quick Reference
+# Full guide: README.md
+
+# ── Build ─────────────────────────────────────────────────
+# Linux / macOS:
+go build -o mudlark-proxy ./cmd/server
+# Windows:
+# go build -o mudlark-proxy.exe ./cmd/server
+
+# ── Run (foreground) ─────────────────────────────────────
+# Linux / macOS:
+JWT_SECRET="your-secret" ./mudlark-proxy
+# Windows (cmd):
+# set JWT_SECRET=your-secret
+# mudlark-proxy.exe
+# Windows (PowerShell):
+# $env:JWT_SECRET = "your-secret"
+# .\mudlark-proxy.exe
+
+# ── Generate a JWT secret ────────────────────────────────
+# Linux / macOS:
+openssl rand -base64 32
+# Windows (PowerShell):
+# [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+
+# ── systemd (Linux production) ───────────────────────────
+sudo cp mudlark-proxy.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mudlark-proxy
+
+# ── Manage (Linux systemd) ───────────────────────────────
+sudo systemctl status mudlark-proxy
+sudo systemctl restart mudlark-proxy
+sudo systemctl stop mudlark-proxy
+
+# ── Logs (Linux systemd) ─────────────────────────────────
+sudo journalctl -u mudlark-proxy -f
+sudo journalctl -u mudlark-proxy --since "1 hour ago"
+
+# ── Graceful restart (Linux only, warns clients) ─────────
+sudo ./scripts/graceful-restart.sh
+sudo RESTART_DELAY=5m ./scripts/graceful-restart.sh

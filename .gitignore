@@ -1,0 +1,47 @@
+# Binaries
+mudlark-proxy
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.cert
+
+# Config overrides
+config.local.yaml
+config.production.yaml
+
+# Logs
+*.log
+logs/
+
+# Data (user registrations)
+data/
+
+# Scripts with secrets
+scripts/*.secret.sh

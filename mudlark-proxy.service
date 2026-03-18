@@ -1,0 +1,37 @@
+[Unit]
+Description=MUDlark Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+# --- Adjust these to your system ---
+User=mudlark
+Group=mudlark
+WorkingDirectory=/opt/mudlark-proxy
+EnvironmentFile=-/etc/mudlark-proxy/env
+ExecStart=/opt/mudlark-proxy/mudlark-proxy -config /opt/mudlark-proxy/config.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Allow binding to privileged ports (443) without root — remove if using a high port
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening (NoNewPrivileges must be false for AmbientCapabilities to work)
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/mudlark-proxy
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
