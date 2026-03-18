@@ -1,6 +1,6 @@
 # MUDlark Proxy Server
 
-A lightweight proxy server for the [MUDlark](https://github.com/mudlark-app) iOS client. It keeps a persistent TCP connection to your MUD server running 24/7, so you can close your phone, switch Wi-Fi, or let the app go to sleep — then reconnect and pick up right where you left off with everything you missed.
+A lightweight proxy server for the [MUDlark](https://testflight.apple.com/join/w8BUhwcQ) iOS client. It keeps a persistent TCP connection to your MUD server running 24/7, so you can close your phone, switch Wi-Fi, or let the app go to sleep — then reconnect and pick up right where you left off with everything you missed.
 
 Works on **Linux**, **macOS**, and **Windows**.
 
