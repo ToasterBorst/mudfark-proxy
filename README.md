@@ -67,7 +67,7 @@ go version
 
 ```bash
 git clone https://github.com/windu-ant/mudlark-server-pub.git
-cd mudlark-proxy
+cd mudlark-server-pub
 ```
 
 Or download the ZIP from GitHub and extract it.
