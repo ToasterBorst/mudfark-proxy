@@ -159,6 +159,8 @@ You should see:
 MUDlark proxy server started on :8443
 ```
 
+After building the .exe once you should just be able to double click it the next time. 
+
 ---
 
 ### Step 7: Connect Your MUDlark Client
