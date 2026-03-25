@@ -368,6 +368,23 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, sess *session.Session
 			sess.UpdateWindowSize(int(width), int(height))
 		}
 
+	case "gmcp":
+		pkg, ok := msg["package"].(string)
+		if !ok || pkg == "" {
+			s.sendError(conn, "INVALID_MESSAGE", "Missing 'package' field", false)
+			return
+		}
+		// data is optional; marshal whatever the client sent (or null)
+		var rawData json.RawMessage
+		if d, exists := msg["data"]; exists && d != nil {
+			if b, err := json.Marshal(d); err == nil {
+				rawData = json.RawMessage(b)
+			}
+		}
+		if err := sess.SendGMCPToMUD(pkg, rawData); err != nil {
+			s.sendError(conn, "MUD_DISCONNECTED", "Cannot send GMCP to MUD", false)
+		}
+
 	case "ack":
 		// Client acknowledges receipt of lines
 		// Could be used to trim buffer, but not critical for MVP

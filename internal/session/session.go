@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -106,10 +107,15 @@ type Session struct {
 	sensitiveRE    *regexp.Regexp
 
 	// Telnet negotiation state
+	telnetParser *TelnetParser
 	ttypeIndex   int // cycles through terminal types on successive TTYPE SEND requests
 	nawsEnabled  bool
 	windowWidth  int
 	windowHeight int
+
+	// Stream reassembly (for data split across TCP packets)
+	utf8Buffer *UTF8Buffer
+	ansiParser *ANSIParser
 
 	// Client broadcast
 	clients   map[*Client]bool
@@ -176,6 +182,9 @@ func NewSession(id, userID, mudHost string, mudPort, connectionTime int, mudIdle
 		lastClientActivity: time.Now(),
 		createdAt:          time.Now(),
 	}
+	s.telnetParser = NewTelnetParser(s)
+	s.utf8Buffer = NewUTF8Buffer()
+	s.ansiParser = NewANSIParser()
 
 	return s, nil
 }
@@ -244,6 +253,9 @@ func (s *Session) ConnectToMUD() error {
 	s.mudConn = finalConn
 	s.mudConnected = true
 	s.mudConnectedAt = time.Now()
+	s.telnetParser.Reset() // fresh connection = fresh parser state
+	s.utf8Buffer.Reset()
+	s.ansiParser.Reset()
 
 	log.Printf("[Session %s] Connected to MUD", s.id)
 
@@ -357,135 +369,16 @@ func (s *Session) readFromMUD() {
 			continue
 		}
 
-		// Handle telnet negotiation and strip IAC sequences
-		cleaned := s.handleTelnetNegotiation(buf[:n])
-
-		// Process the chunk (store in buffer and broadcast)
+		// Pipeline: raw TCP → telnet IAC stripping → UTF-8 reassembly → ANSI sequence reassembly
+		cleaned := s.telnetParser.Process(buf[:n])
 		if len(cleaned) > 0 {
-			s.processChunk(string(cleaned))
+			complete := s.utf8Buffer.Process(cleaned)
+			safe := s.ansiParser.Process(complete)
+			if len(safe) > 0 {
+				s.processChunk(string(safe))
+			}
 		}
 	}
-}
-
-// handleTelnetNegotiation processes telnet IAC sequences and sends responses
-func (s *Session) handleTelnetNegotiation(data []byte) []byte {
-	if len(data) == 0 {
-		return data
-	}
-
-	result := make([]byte, 0, len(data))
-	i := 0
-
-	for i < len(data) {
-		if data[i] == 255 { // IAC byte
-			if i+1 >= len(data) {
-				// IAC at end of buffer, skip it
-				break
-			}
-
-			cmd := data[i+1]
-
-			// Handle different IAC commands
-			switch cmd {
-			case 255: // Escaped IAC (literal 255)
-				result = append(result, 255)
-				i += 2
-
-			case 250: // SB (subnegotiation begin)
-				// Collect subneg bytes until IAC SE (255 240)
-				sbStart := i + 2 // first byte after IAC SB
-				sbEnd := sbStart
-				i += 2
-				for i < len(data) {
-					if data[i] == 255 && i+1 < len(data) && data[i+1] == 240 {
-						sbEnd = i
-						i += 2
-						break
-					}
-					i++
-				}
-				// Handle subnegotiation content
-				if sbStart < sbEnd {
-					sbData := data[sbStart:sbEnd]
-					switch sbData[0] {
-					case 24: // TTYPE
-						if len(sbData) >= 2 && sbData[1] == 1 { // SEND
-							s.sendTTYPEResponse()
-						}
-					case 42: // CHARSET
-						if len(sbData) >= 2 && sbData[1] == 1 { // REQUEST
-							s.handleCharsetRequest(sbData)
-						}
-					}
-				}
-
-			case 251: // WILL - server wants to enable an option
-				if i+2 < len(data) {
-					option := data[i+2]
-				switch option {
-					case 3: // SGA - Suppress Go Ahead (accept for full-duplex)
-						s.sendTelnetResponse([]byte{255, 253, 3}) // IAC DO SGA
-					case 1: // ECHO - server will handle echo (password mode, etc.)
-						s.sendTelnetResponse([]byte{255, 253, 1}) // IAC DO ECHO
-					case 42: // CHARSET - server supports charset negotiation
-						s.sendTelnetResponse([]byte{255, 253, 42}) // IAC DO CHARSET
-					default:
-						s.sendTelnetResponse([]byte{255, 254, option}) // IAC DONT option
-					}
-					i += 3
-				} else {
-					i += 2
-				}
-
-			case 252: // WONT - server refuses to enable an option
-				// Just acknowledge, no response needed
-				i += 3
-				if i > len(data) {
-					i = len(data)
-				}
-
-			case 253: // DO - server wants us to enable an option
-				if i+2 < len(data) {
-					option := data[i+2]
-					switch option {
-					case 24: // TTYPE - we support it
-						s.sendTelnetResponse([]byte{255, 251, 24}) // IAC WILL TTYPE
-					case 31: // NAWS - we support window size reporting
-						s.sendTelnetResponse([]byte{255, 251, 31}) // IAC WILL NAWS
-						s.mu.Lock()
-						s.nawsEnabled = true
-						s.mu.Unlock()
-						s.sendNAWS() // Send initial window size
-					case 3: // SGA - accept if server asks us to suppress GA too
-						s.sendTelnetResponse([]byte{255, 251, 3}) // IAC WILL SGA
-					case 42: // CHARSET - we support charset negotiation
-						s.sendTelnetResponse([]byte{255, 251, 42}) // IAC WILL CHARSET
-					default:
-						s.sendTelnetResponse([]byte{255, 252, option}) // IAC WONT option
-					}
-					i += 3
-				} else {
-					i += 2
-				}
-
-			case 254: // DONT - server doesn't want us to enable an option
-				// Just acknowledge, no response needed
-				i += 3
-				if i > len(data) {
-					i = len(data)
-				}
-
-			default:
-				// Other IAC commands (2 bytes)
-				i += 2
-			}
-		} else {
-			result = append(result, data[i])
-			i++
-		}
-	}
-
-	return result
 }
 
 // sendTTYPEResponse sends the next terminal type in the TTYPE cycling sequence.
@@ -504,9 +397,9 @@ func (s *Session) sendTTYPEResponse() {
 	tname := types[idx]
 	// IAC SB TTYPE IS <name> IAC SE
 	resp := make([]byte, 0, 6+len(tname))
-	resp = append(resp, 255, 250, 24, 0) // IAC SB TTYPE IS
+	resp = append(resp, telnetIAC, telnetSB, optTTYPE, 0) // IAC SB TTYPE IS
 	resp = append(resp, []byte(tname)...)
-	resp = append(resp, 255, 240) // IAC SE
+	resp = append(resp, telnetIAC, telnetSE) // IAC SE
 	s.sendTelnetResponse(resp)
 }
 
@@ -535,30 +428,127 @@ func (s *Session) handleCharsetRequest(sbData []byte) {
 	if accepted != "" {
 		// IAC SB CHARSET ACCEPTED <charset> IAC SE
 		resp := make([]byte, 0, 6+len(accepted))
-		resp = append(resp, 255, 250, 42, 2) // IAC SB CHARSET ACCEPTED
+		resp = append(resp, telnetIAC, telnetSB, optCHARSET, 2) // IAC SB CHARSET ACCEPTED
 		resp = append(resp, []byte(accepted)...)
-		resp = append(resp, 255, 240) // IAC SE
+		resp = append(resp, telnetIAC, telnetSE) // IAC SE
 		s.sendTelnetResponse(resp)
 	} else {
 		// IAC SB CHARSET REJECTED IAC SE
-		s.sendTelnetResponse([]byte{255, 250, 42, 3, 255, 240})
+		s.sendTelnetResponse([]byte{telnetIAC, telnetSB, optCHARSET, 3, telnetIAC, telnetSE})
 	}
+}
+
+// handleGMCP processes an incoming GMCP subnegotiation from the MUD.
+// Payload format (after the leading 201 option byte has been stripped by the
+// telnet parser): "Package.Name" or "Package.Name {json}"
+func (s *Session) handleGMCP(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+
+	// Split on the first space to separate package name from JSON data.
+	pkgName := string(payload)
+	var rawData json.RawMessage = []byte("null")
+
+	if idx := strings.IndexByte(pkgName, ' '); idx >= 0 {
+		rawData = json.RawMessage(strings.TrimSpace(pkgName[idx+1:]))
+		pkgName = pkgName[:idx]
+	}
+
+	if pkgName == "" {
+		return
+	}
+
+	s.broadcastGMCP(pkgName, rawData)
+}
+
+// broadcastGMCP sends a GMCP message to all connected clients.
+// GMCP data is not buffered in the ring buffer — clients that are offline
+// will miss real-time GMCP events (vitals, room info, etc.), which the MUD
+// will re-send when the player is next active.
+func (s *Session) broadcastGMCP(pkg string, data json.RawMessage) {
+	message := map[string]interface{}{
+		"type":    "gmcp",
+		"package": pkg,
+		"data":    data,
+	}
+
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+
+	for client := range s.clients {
+		select {
+		case client.SendChan <- mustMarshalJSON(message):
+		default:
+			// Client's send buffer is full, skip
+		}
+	}
+}
+
+// SendGMCPToMUD sends a GMCP message to the MUD.
+// Format on the wire: IAC SB GMCP <package> SP <json> IAC SE
+// Any 0xFF bytes in the payload are doubled per telnet escaping rules.
+func (s *Session) SendGMCPToMUD(pkg string, data json.RawMessage) error {
+	s.mu.RLock()
+	conn := s.mudConn
+	connected := s.mudConnected
+	s.mu.RUnlock()
+
+	if !connected || conn == nil {
+		return ErrMUDNotConnected
+	}
+
+	// Build payload: "Package.Name {json}" or just "Package.Name" for null/empty
+	var rawPayload []byte
+	if len(data) > 0 && string(data) != "null" {
+		rawPayload = []byte(pkg + " " + string(data))
+	} else {
+		rawPayload = []byte(pkg)
+	}
+
+	// Escape 0xFF in payload (telnet IAC must be doubled inside subnegotiations)
+	escaped := make([]byte, 0, len(rawPayload)+4)
+	for _, b := range rawPayload {
+		escaped = append(escaped, b)
+		if b == telnetIAC {
+			escaped = append(escaped, telnetIAC)
+		}
+	}
+
+	resp := make([]byte, 0, 4+len(escaped)+2)
+	resp = append(resp, telnetIAC, telnetSB, optGMCP)
+	resp = append(resp, escaped...)
+	resp = append(resp, telnetIAC, telnetSE)
+
+	conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout))
+	_, err := conn.Write(resp)
+	if err != nil {
+		if !isExpectedDisconnectError(err) {
+			log.Printf("[Session %s] Error sending GMCP to MUD: %v", s.id, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // sendNAWS sends the current window size to the MUD via NAWS subnegotiation.
 // Format: IAC SB NAWS <width-hi> <width-lo> <height-hi> <height-lo> IAC SE
+// Per RFC 1073, any 0xFF byte in the dimension values must be doubled to
+// distinguish it from the IAC character.
 func (s *Session) sendNAWS() {
 	s.mu.RLock()
 	w := s.windowWidth
 	h := s.windowHeight
 	s.mu.RUnlock()
 
-	resp := []byte{
-		255, 250, 31,           // IAC SB NAWS
-		byte(w >> 8), byte(w),  // width (big-endian 16-bit)
-		byte(h >> 8), byte(h),  // height (big-endian 16-bit)
-		255, 240,               // IAC SE
+	resp := []byte{telnetIAC, telnetSB, optNAWS} // IAC SB NAWS
+	for _, b := range []byte{byte(w >> 8), byte(w), byte(h >> 8), byte(h)} {
+		resp = append(resp, b)
+		if b == telnetIAC {
+			resp = append(resp, b) // double 0xFF per RFC 1073
+		}
 	}
+	resp = append(resp, telnetIAC, telnetSE) // IAC SE
 	s.sendTelnetResponse(resp)
 }
 
@@ -598,60 +588,6 @@ func (s *Session) sendTelnetResponse(response []byte) {
 			log.Printf("[Session %s] Error sending telnet response: %v", s.id, err)
 		}
 	}
-}
-
-// stripTelnetIAC removes telnet IAC (Interpret As Command) sequences
-// DEPRECATED: Replaced by handleTelnetNegotiation
-// Keeping for reference only
-func stripTelnetIAC(data []byte) []byte {
-	if len(data) == 0 {
-		return data
-	}
-
-	result := make([]byte, 0, len(data))
-	i := 0
-
-	for i < len(data) {
-		if data[i] == 255 { // IAC byte
-			if i+1 >= len(data) {
-				// IAC at end of buffer, skip it
-				break
-			}
-
-			cmd := data[i+1]
-
-			// Handle different IAC commands
-			switch cmd {
-			case 255: // Escaped IAC (literal 255)
-				result = append(result, 255)
-				i += 2
-			case 250: // SB (subnegotiation begin)
-				// Skip until we find IAC SE (255 240)
-				i += 2
-				for i < len(data) {
-					if data[i] == 255 && i+1 < len(data) && data[i+1] == 240 {
-						i += 2
-						break
-					}
-					i++
-				}
-			case 251, 252, 253, 254: // WILL, WONT, DO, DONT
-				// These are followed by one option byte
-				i += 3
-				if i > len(data) {
-					i = len(data)
-				}
-			default:
-				// Other IAC commands (2 bytes)
-				i += 2
-			}
-		} else {
-			result = append(result, data[i])
-			i++
-		}
-	}
-
-	return result
 }
 
 // processChunk handles a chunk of data from the MUD

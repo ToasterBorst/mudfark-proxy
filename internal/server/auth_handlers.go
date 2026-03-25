@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	challengeTTL       = 30 * time.Second
+	challengeTTL       = 2 * time.Minute
 	challengeNonceSize = 32
 )
 
