@@ -110,6 +110,7 @@ type Session struct {
 	telnetParser *TelnetParser
 	ttypeIndex   int // cycles through terminal types on successive TTYPE SEND requests
 	nawsEnabled  bool
+	gmcpEnabled  bool // true once Core.Hello has been sent to the MUD on this connection
 	windowWidth  int
 	windowHeight int
 
@@ -254,6 +255,7 @@ func (s *Session) ConnectToMUD() error {
 	s.mudConnected = true
 	s.mudConnectedAt = time.Now()
 	s.telnetParser.Reset() // fresh connection = fresh parser state
+	s.gmcpEnabled = false  // reset so Core.Hello is re-sent on the new TCP connection
 	s.utf8Buffer.Reset()
 	s.ansiParser.Reset()
 
@@ -328,6 +330,13 @@ func (s *Session) readFromMUD() {
 	}()
 
 	log.Printf("[Session %s] Starting MUD read loop", s.id)
+
+	// Announce capabilities proactively. Some MUDs expect the client to send
+	// WILL GMCP / WILL MSDP instead of waiting for the server to advertise.
+	// optWillSent is marked here so any confirming DO from the server is
+	// silently accepted without triggering a second WILL reply.
+	s.sendProactiveNegotiations()
+
 	buf := make([]byte, 4096)
 
 	for {
@@ -460,6 +469,76 @@ func (s *Session) handleGMCP(payload []byte) {
 	}
 
 	s.broadcastGMCP(pkgName, rawData)
+
+	// Some servers (e.g. Mystic MUD) send their Core.Hello seconds after we've
+	// already sent Core.Supports.Set and discard the early one. Always re-send
+	// Core.Supports.Set when the server's Core.Hello arrives.
+	if strings.EqualFold(pkgName, "Core.Hello") {
+		s.sendGMCPCoreSupports()
+	}
+}
+
+// sendGMCPCoreHello sends Core.Hello and Core.Supports.Set to the MUD as soon
+// as GMCP is negotiated. Many MUDs (including those that send IAC DO GMCP
+// instead of the spec-correct IAC WILL GMCP) will not transmit any GMCP data
+// until they receive Core.Hello.
+//
+// The method is guarded by gmcpEnabled so it fires at most once per TCP
+// connection, even if the server sends both IAC WILL GMCP and IAC DO GMCP.
+func (s *Session) sendGMCPCoreHello() {
+	s.mu.Lock()
+	if s.gmcpEnabled {
+		s.mu.Unlock()
+		return
+	}
+	s.gmcpEnabled = true
+	s.mu.Unlock()
+
+	coreHello, _ := json.Marshal(map[string]string{
+		"client":  "MUDlark",
+		"version": "1.0",
+	})
+	if err := s.SendGMCPToMUD("Core.Hello", json.RawMessage(coreHello)); err != nil {
+		return
+	}
+	s.sendGMCPCoreSupports()
+}
+
+// sendGMCPCoreSupports sends Core.Supports.Set to the MUD.
+// Called both on initial GMCP negotiation (via sendGMCPCoreHello) and whenever
+// the MUD sends its own Core.Hello — some servers send Core.Hello late and
+// discard any Core.Supports.Set that arrived before it.
+func (s *Session) sendGMCPCoreSupports() {
+	// Declare the GMCP packages this proxy/client handles. The MUD uses this
+	// list to decide which events to emit. Include common packages broadly so
+	// MUDs with conservative defaults start sending.
+	supports, _ := json.Marshal([]string{
+		"Char 1", "Char.Vitals 1", "Char.Stats 1",
+		"Room 1", "Comm.Channel 1", "Group 1",
+		"External.Discord 1",
+	})
+	s.SendGMCPToMUD("Core.Supports.Set", json.RawMessage(supports)) //nolint:errcheck
+}
+
+// sendProactiveNegotiations announces GMCP and MSDP support immediately when
+// the MUD connection is established, before the server has sent any option
+// negotiation. This handles servers that expect the client to initiate rather
+// than advertising WILL themselves.
+//
+// We mark optWillSent for both options before entering the read loop so that
+// any confirming IAC DO reply from the server is silently accepted and does
+// not trigger a second WILL reply (preventing WILL→DO→WILL→DO loops).
+//
+// Must be called from the readFromMUD goroutine (single-threaded access to
+// telnetParser.optWillSent, no lock required).
+func (s *Session) sendProactiveNegotiations() {
+	s.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optGMCP})
+	s.telnetParser.optWillSent[optGMCP] = true
+	s.sendGMCPCoreHello()
+
+	s.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optMSDP})
+	s.telnetParser.optWillSent[optMSDP] = true
+	s.requestMSDPReportableVariables()
 }
 
 // broadcastGMCP sends a GMCP message to all connected clients.
@@ -483,6 +562,64 @@ func (s *Session) broadcastGMCP(pkg string, data json.RawMessage) {
 			// Client's send buffer is full, skip
 		}
 	}
+}
+
+// handleMSDP processes an incoming MSDP subnegotiation from the MUD.
+// Each MSDP variable update is forwarded to all connected clients as a GMCP
+// message with the package name "MSDP.<VARIABLE_NAME>".  This allows the iOS
+// client to handle MSDP data through its existing GMCP pipeline without any
+// client-side changes.
+//
+// Special case: a REPORTABLE_VARIABLES update triggers automatic REPORT
+// subscription for every variable the MUD lists, so the proxy self-manages
+// the MSDP subscription lifecycle server-side.
+func (s *Session) handleMSDP(payload []byte) {
+	vars := parseMSDPVars(payload)
+	for _, v := range vars {
+		if v.Name == "REPORTABLE_VARIABLES" {
+			// Subscribe to every variable the MUD says it can report
+			var names []string
+			if err := json.Unmarshal(v.Value, &names); err == nil {
+				for _, name := range names {
+					s.sendMSDPReport(name)
+				}
+			}
+			// Also forward the list to clients (useful for debugging / display)
+			s.broadcastGMCP("MSDP.REPORTABLE_VARIABLES", v.Value)
+			continue
+		}
+		s.broadcastGMCP("MSDP."+v.Name, v.Value)
+	}
+}
+
+// requestMSDPReportableVariables asks the MUD which MSDP variables it supports
+// reporting. The response (a REPORTABLE_VARIABLES update) is handled by
+// handleMSDP, which then sends individual REPORT commands for each variable.
+func (s *Session) requestMSDPReportableVariables() {
+	s.sendMSDPCommand("LIST", "REPORTABLE_VARIABLES")
+}
+
+// sendMSDPReport sends an MSDP REPORT command to start receiving updates for
+// the named variable.
+func (s *Session) sendMSDPReport(varName string) {
+	s.sendMSDPCommand("REPORT", varName)
+}
+
+// sendMSDPCommand builds and sends an MSDP subnegotiation of the form:
+//
+//	IAC SB MSDP  MSDP_VAR <cmdVar>  MSDP_VAL <cmdVal>  IAC SE
+func (s *Session) sendMSDPCommand(cmdVar, cmdVal string) {
+	payload := []byte(cmdVar)
+	payload = append([]byte{msdpVAR}, payload...)
+	payload = append(payload, msdpVAL)
+	payload = append(payload, []byte(cmdVal)...)
+
+	resp := make([]byte, 0, 3+len(payload)+2)
+	resp = append(resp, telnetIAC, telnetSB, optMSDP)
+	resp = append(resp, payload...)
+	resp = append(resp, telnetIAC, telnetSE)
+
+	s.sendTelnetResponse(resp)
 }
 
 // SendGMCPToMUD sends a GMCP message to the MUD.
