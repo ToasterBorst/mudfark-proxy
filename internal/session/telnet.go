@@ -161,93 +161,39 @@ func (p *TelnetParser) Process(data []byte) []byte {
 }
 
 // handleWill responds to IAC WILL <option> from the server.
-// Per RFC 1143 (Q Method): if we have already sent DO for this option on the
-// current connection, suppress the duplicate response to prevent loops.
+// Ateraan-safe: only accept SGA and ECHO (fundamental telnet). Refuse everything
+// else (GMCP, MSDP, TTYPE, NAWS, CHARSET, etc.) to avoid crashing legacy drivers.
 func (p *TelnetParser) handleWill(option byte) {
 	if p.optDoSent[option] {
 		return
 	}
 	switch option {
-	case optSGA:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, optSGA})
+	case optSGA, optECHO:
+		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, option})
 		p.optDoSent[option] = true
-	case optECHO:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, optECHO})
-		p.optDoSent[option] = true
-	case optCHARSET:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, optCHARSET})
-		p.optDoSent[option] = true
-	case optMSDP:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, optMSDP})
-		p.optDoSent[option] = true
-		p.session.requestMSDPReportableVariables()
-	case optGMCP:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDO, optGMCP})
-		p.optDoSent[option] = true
-		p.session.sendGMCPCoreHello()
 	default:
 		p.session.sendTelnetResponse([]byte{telnetIAC, telnetDONT, option})
 	}
 }
 
 // handleDo responds to IAC DO <option> from the server.
-// Some misbehaving servers send IAC DO where the spec requires IAC WILL
-// (e.g. DO GMCP instead of WILL GMCP). We accept both forms for robustness.
-// Per RFC 1143: suppress duplicate responses for the same option.
+// Ateraan-safe: only accept SGA (fundamental telnet). Refuse everything else
+// (TTYPE, NAWS, GMCP, MSDP, CHARSET, etc.) to avoid crashing legacy drivers.
 func (p *TelnetParser) handleDo(option byte) {
 	if p.optWillSent[option] {
 		return
 	}
 	switch option {
-	case optTTYPE:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optTTYPE})
-		p.optWillSent[option] = true
-	case optNAWS:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optNAWS})
-		p.optWillSent[option] = true
-		p.session.mu.Lock()
-		p.session.nawsEnabled = true
-		p.session.mu.Unlock()
-		p.session.sendNAWS()
 	case optSGA:
 		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optSGA})
 		p.optWillSent[option] = true
-	case optCHARSET:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optCHARSET})
-		p.optWillSent[option] = true
-	case optMSDP:
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optMSDP})
-		p.optWillSent[option] = true
-		p.session.requestMSDPReportableVariables()
-	case optGMCP:
-		// Some servers incorrectly send DO GMCP instead of WILL GMCP.
-		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optGMCP})
-		p.optWillSent[option] = true
-		p.session.sendGMCPCoreHello()
 	default:
 		p.session.sendTelnetResponse([]byte{telnetIAC, telnetWONT, option})
 	}
 }
 
 // handleSubnegotiation dispatches a completed subnegotiation payload.
+// Ateraan-safe: we never accept any option that uses subnegotiation, so this
+// should never fire. No-op as a safety net.
 func (p *TelnetParser) handleSubnegotiation(sbData []byte) {
-	if len(sbData) == 0 {
-		return
-	}
-	switch sbData[0] {
-	case optTTYPE:
-		if len(sbData) >= 2 && sbData[1] == 1 { // SEND
-			p.session.sendTTYPEResponse()
-		}
-	case optCHARSET:
-		if len(sbData) >= 2 && sbData[1] == 1 { // REQUEST
-			p.session.handleCharsetRequest(sbData)
-		}
-	case optMSDP:
-		// Payload: sequence of MSDP_VAR / MSDP_VAL pairs
-		p.session.handleMSDP(sbData[1:])
-	case optGMCP:
-		// Payload: <Package.Name> [SP <json>]
-		p.session.handleGMCP(sbData[1:])
-	}
 }

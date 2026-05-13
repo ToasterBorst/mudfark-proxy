@@ -390,92 +390,16 @@ func (s *Session) readFromMUD() {
 	}
 }
 
-// sendTTYPEResponse sends the next terminal type in the TTYPE cycling sequence.
-// The sequence is: MUDLARK → XTERM-256COLOR → ANSI (then repeats ANSI).
-// The MUD detects the end of the list when a type repeats.
+// sendTTYPEResponse is a no-op. This proxy never identifies its terminal type.
 func (s *Session) sendTTYPEResponse() {
-	types := []string{"MUDLARK", "XTERM-256COLOR", "ANSI"}
-
-	s.mu.Lock()
-	idx := s.ttypeIndex
-	if s.ttypeIndex < len(types)-1 {
-		s.ttypeIndex++
-	}
-	s.mu.Unlock()
-
-	tname := types[idx]
-	// IAC SB TTYPE IS <name> IAC SE
-	resp := make([]byte, 0, 6+len(tname))
-	resp = append(resp, telnetIAC, telnetSB, optTTYPE, 0) // IAC SB TTYPE IS
-	resp = append(resp, []byte(tname)...)
-	resp = append(resp, telnetIAC, telnetSE) // IAC SE
-	s.sendTelnetResponse(resp)
 }
 
-// handleCharsetRequest handles an IAC SB CHARSET REQUEST subnegotiation.
-// Format: CHARSET(42) REQUEST(1) <sep> <charset1> <sep> <charset2> ...
-// We look for UTF-8 in the offered list; if found, accept it. Otherwise reject.
+// handleCharsetRequest is a no-op. This proxy never negotiates charset.
 func (s *Session) handleCharsetRequest(sbData []byte) {
-	// sbData[0] = 42 (CHARSET), sbData[1] = 1 (REQUEST)
-	if len(sbData) < 3 {
-		return
-	}
-
-	sep := sbData[2] // separator character
-	offered := string(sbData[3:])
-
-	// Check if UTF-8 is in the offered charset list
-	accepted := ""
-	for _, cs := range strings.Split(offered, string(sep)) {
-		upper := strings.ToUpper(strings.TrimSpace(cs))
-		if upper == "UTF-8" || upper == "UTF8" {
-			accepted = "UTF-8"
-			break
-		}
-	}
-
-	if accepted != "" {
-		// IAC SB CHARSET ACCEPTED <charset> IAC SE
-		resp := make([]byte, 0, 6+len(accepted))
-		resp = append(resp, telnetIAC, telnetSB, optCHARSET, 2) // IAC SB CHARSET ACCEPTED
-		resp = append(resp, []byte(accepted)...)
-		resp = append(resp, telnetIAC, telnetSE) // IAC SE
-		s.sendTelnetResponse(resp)
-	} else {
-		// IAC SB CHARSET REJECTED IAC SE
-		s.sendTelnetResponse([]byte{telnetIAC, telnetSB, optCHARSET, 3, telnetIAC, telnetSE})
-	}
 }
 
-// handleGMCP processes an incoming GMCP subnegotiation from the MUD.
-// Payload format (after the leading 201 option byte has been stripped by the
-// telnet parser): "Package.Name" or "Package.Name {json}"
+// handleGMCP is a no-op. This proxy never processes GMCP.
 func (s *Session) handleGMCP(payload []byte) {
-	if len(payload) == 0 {
-		return
-	}
-
-	// Split on the first space to separate package name from JSON data.
-	pkgName := string(payload)
-	var rawData json.RawMessage = []byte("null")
-
-	if idx := strings.IndexByte(pkgName, ' '); idx >= 0 {
-		rawData = json.RawMessage(strings.TrimSpace(pkgName[idx+1:]))
-		pkgName = pkgName[:idx]
-	}
-
-	if pkgName == "" {
-		return
-	}
-
-	s.broadcastGMCP(pkgName, rawData)
-
-	// Some servers (e.g. Mystic MUD) send their Core.Hello seconds after we've
-	// already sent Core.Supports.Set and discard the early one. Always re-send
-	// Core.Supports.Set when the server's Core.Hello arrives.
-	if strings.EqualFold(pkgName, "Core.Hello") {
-		s.sendGMCPCoreSupports()
-	}
 }
 
 // sendGMCPCoreHello sends Core.Hello and Core.Supports.Set to the MUD as soon
@@ -485,39 +409,16 @@ func (s *Session) handleGMCP(payload []byte) {
 //
 // The method is guarded by gmcpEnabled so it fires at most once per TCP
 // connection, even if the server sends both IAC WILL GMCP and IAC DO GMCP.
+// sendGMCPCoreHello is a no-op. This proxy never sends GMCP.
 func (s *Session) sendGMCPCoreHello() {
-	s.mu.Lock()
-	if s.gmcpEnabled {
-		s.mu.Unlock()
-		return
-	}
-	s.gmcpEnabled = true
-	s.mu.Unlock()
-
-	coreHello, _ := json.Marshal(map[string]string{
-		"client":  "MUDlark",
-		"version": "1.0",
-	})
-	if err := s.SendGMCPToMUD("Core.Hello", json.RawMessage(coreHello)); err != nil {
-		return
-	}
-	s.sendGMCPCoreSupports()
 }
 
 // sendGMCPCoreSupports sends Core.Supports.Set to the MUD.
 // Called both on initial GMCP negotiation (via sendGMCPCoreHello) and whenever
 // the MUD sends its own Core.Hello — some servers send Core.Hello late and
 // discard any Core.Supports.Set that arrived before it.
+// sendGMCPCoreSupports is a no-op. This proxy never sends GMCP.
 func (s *Session) sendGMCPCoreSupports() {
-	// Declare the GMCP packages this proxy/client handles. The MUD uses this
-	// list to decide which events to emit. Include common packages broadly so
-	// MUDs with conservative defaults start sending.
-	supports, _ := json.Marshal([]string{
-		"Char 1", "Char.Vitals 1", "Char.Stats 1",
-		"Room 1", "Comm.Channel 1", "Group 1",
-		"External.Discord 1",
-	})
-	s.SendGMCPToMUD("Core.Supports.Set", json.RawMessage(supports)) //nolint:errcheck
 }
 
 // sendProactiveNegotiations announces GMCP and MSDP support immediately when
@@ -531,14 +432,8 @@ func (s *Session) sendGMCPCoreSupports() {
 //
 // Must be called from the readFromMUD goroutine (single-threaded access to
 // telnetParser.optWillSent, no lock required).
+// sendProactiveNegotiations is a no-op. This proxy never advertises capabilities.
 func (s *Session) sendProactiveNegotiations() {
-	s.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optGMCP})
-	s.telnetParser.optWillSent[optGMCP] = true
-	s.sendGMCPCoreHello()
-
-	s.sendTelnetResponse([]byte{telnetIAC, telnetWILL, optMSDP})
-	s.telnetParser.optWillSent[optMSDP] = true
-	s.requestMSDPReportableVariables()
 }
 
 // broadcastGMCP sends a GMCP message to all connected clients.
@@ -573,120 +468,34 @@ func (s *Session) broadcastGMCP(pkg string, data json.RawMessage) {
 // Special case: a REPORTABLE_VARIABLES update triggers automatic REPORT
 // subscription for every variable the MUD lists, so the proxy self-manages
 // the MSDP subscription lifecycle server-side.
+// handleMSDP is a no-op. This proxy never processes MSDP.
 func (s *Session) handleMSDP(payload []byte) {
-	vars := parseMSDPVars(payload)
-	for _, v := range vars {
-		if v.Name == "REPORTABLE_VARIABLES" {
-			// Subscribe to every variable the MUD says it can report
-			var names []string
-			if err := json.Unmarshal(v.Value, &names); err == nil {
-				for _, name := range names {
-					s.sendMSDPReport(name)
-				}
-			}
-			// Also forward the list to clients (useful for debugging / display)
-			s.broadcastGMCP("MSDP.REPORTABLE_VARIABLES", v.Value)
-			continue
-		}
-		s.broadcastGMCP("MSDP."+v.Name, v.Value)
-	}
 }
 
 // requestMSDPReportableVariables asks the MUD which MSDP variables it supports
 // reporting. The response (a REPORTABLE_VARIABLES update) is handled by
 // handleMSDP, which then sends individual REPORT commands for each variable.
+// requestMSDPReportableVariables is a no-op. This proxy never requests MSDP variables.
 func (s *Session) requestMSDPReportableVariables() {
-	s.sendMSDPCommand("LIST", "REPORTABLE_VARIABLES")
 }
 
 // sendMSDPReport sends an MSDP REPORT command to start receiving updates for
 // the named variable.
+// sendMSDPReport is a no-op. This proxy never sends MSDP.
 func (s *Session) sendMSDPReport(varName string) {
-	s.sendMSDPCommand("REPORT", varName)
 }
 
-// sendMSDPCommand builds and sends an MSDP subnegotiation of the form:
-//
-//	IAC SB MSDP  MSDP_VAR <cmdVar>  MSDP_VAL <cmdVal>  IAC SE
+// sendMSDPCommand is a no-op. This proxy never sends MSDP.
 func (s *Session) sendMSDPCommand(cmdVar, cmdVal string) {
-	payload := []byte(cmdVar)
-	payload = append([]byte{msdpVAR}, payload...)
-	payload = append(payload, msdpVAL)
-	payload = append(payload, []byte(cmdVal)...)
-
-	resp := make([]byte, 0, 3+len(payload)+2)
-	resp = append(resp, telnetIAC, telnetSB, optMSDP)
-	resp = append(resp, payload...)
-	resp = append(resp, telnetIAC, telnetSE)
-
-	s.sendTelnetResponse(resp)
 }
 
-// SendGMCPToMUD sends a GMCP message to the MUD.
-// Format on the wire: IAC SB GMCP <package> SP <json> IAC SE
-// Any 0xFF bytes in the payload are doubled per telnet escaping rules.
+// SendGMCPToMUD is a no-op. This proxy never sends GMCP to the MUD.
 func (s *Session) SendGMCPToMUD(pkg string, data json.RawMessage) error {
-	s.mu.RLock()
-	conn := s.mudConn
-	connected := s.mudConnected
-	s.mu.RUnlock()
-
-	if !connected || conn == nil {
-		return ErrMUDNotConnected
-	}
-
-	// Build payload: "Package.Name {json}" or just "Package.Name" for null/empty
-	var rawPayload []byte
-	if len(data) > 0 && string(data) != "null" {
-		rawPayload = []byte(pkg + " " + string(data))
-	} else {
-		rawPayload = []byte(pkg)
-	}
-
-	// Escape 0xFF in payload (telnet IAC must be doubled inside subnegotiations)
-	escaped := make([]byte, 0, len(rawPayload)+4)
-	for _, b := range rawPayload {
-		escaped = append(escaped, b)
-		if b == telnetIAC {
-			escaped = append(escaped, telnetIAC)
-		}
-	}
-
-	resp := make([]byte, 0, 4+len(escaped)+2)
-	resp = append(resp, telnetIAC, telnetSB, optGMCP)
-	resp = append(resp, escaped...)
-	resp = append(resp, telnetIAC, telnetSE)
-
-	conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout))
-	_, err := conn.Write(resp)
-	if err != nil {
-		if !isExpectedDisconnectError(err) {
-			log.Printf("[Session %s] Error sending GMCP to MUD: %v", s.id, err)
-		}
-		return err
-	}
 	return nil
 }
 
-// sendNAWS sends the current window size to the MUD via NAWS subnegotiation.
-// Format: IAC SB NAWS <width-hi> <width-lo> <height-hi> <height-lo> IAC SE
-// Per RFC 1073, any 0xFF byte in the dimension values must be doubled to
-// distinguish it from the IAC character.
+// sendNAWS is a no-op. This proxy never sends window size to the MUD.
 func (s *Session) sendNAWS() {
-	s.mu.RLock()
-	w := s.windowWidth
-	h := s.windowHeight
-	s.mu.RUnlock()
-
-	resp := []byte{telnetIAC, telnetSB, optNAWS} // IAC SB NAWS
-	for _, b := range []byte{byte(w >> 8), byte(w), byte(h >> 8), byte(h)} {
-		resp = append(resp, b)
-		if b == telnetIAC {
-			resp = append(resp, b) // double 0xFF per RFC 1073
-		}
-	}
-	resp = append(resp, telnetIAC, telnetSE) // IAC SE
-	s.sendTelnetResponse(resp)
 }
 
 // UpdateWindowSize updates the stored window size and sends a NAWS update if negotiated.

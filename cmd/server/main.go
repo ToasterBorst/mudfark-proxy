@@ -33,7 +33,7 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 
-	log.Printf("MUDlark proxy server started on %s", cfg.Server.Address)
+	log.Printf("mudfark proxy server started on %s", cfg.Server.Address)
 
 	// Wait for interrupt signal for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

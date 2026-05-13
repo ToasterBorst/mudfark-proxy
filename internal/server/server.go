@@ -236,7 +236,7 @@ func formatRestartWarning(remaining time.Duration) string {
 	} else {
 		label = fmt.Sprintf("%d SECONDS", int(remaining.Seconds()))
 	}
-	return fmt.Sprintf("\r\n*******\r\nWARNING: MUDLARK-GO PROXY SERVER RESTART IN %s\r\n*******\r\n", label)
+	return fmt.Sprintf("\r\n*******\r\nWARNING: MUDFARK PROXY SERVER RESTART IN %s\r\n*******\r\n", label)
 }
 
 // handleHealth handles health check requests

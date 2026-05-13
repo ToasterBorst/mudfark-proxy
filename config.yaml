@@ -1,4 +1,4 @@
-# MUDlark Proxy Server Configuration
+# mudfark Proxy Server Configuration (Ateraan-safe fork)
 # Copy this file and adjust to your environment.
 # For TLS: provide paths to your cert/key files.
 # For development: leave tls_cert_file and tls_key_file empty to run plain HTTP/WS.
